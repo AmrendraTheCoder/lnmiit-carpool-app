@@ -120,6 +120,7 @@ const AppContent = ({ session }: { session: Session }) => {
     {}
   );
   const router = useRouter();
+  const [sectionLoading, setSectionLoading] = useState(false);
 
   const themeTransition = useSharedValue(0);
 
@@ -215,6 +216,34 @@ const AppContent = ({ session }: { session: Session }) => {
           <View style={styles.content}>
             {/* Main Content */}
             <View style={styles.sceneContainer}>
+              {sectionLoading && (
+                <View
+                  style={[
+                    styles.sectionLoadingOverlay,
+                    {
+                      backgroundColor: isDarkMode
+                        ? "rgba(0,0,0,0.8)"
+                        : "rgba(255,255,255,0.8)",
+                    },
+                  ]}
+                >
+                  <ActivityIndicator
+                    size="large"
+                    color={isDarkMode ? "#FFFFFF" : "#000000"}
+                  />
+                  <Text
+                    style={[
+                      styles.sectionLoadingText,
+                      {
+                        color: isDarkMode ? "#FFFFFF" : "#000000",
+                      },
+                    ]}
+                  >
+                    Loading...
+                  </Text>
+                </View>
+              )}
+
               {index === 0 && (
                 <StudentCarpoolSystem
                   isDarkMode={isDarkMode}
@@ -306,7 +335,15 @@ const AppContent = ({ session }: { session: Session }) => {
                   <TouchableOpacity
                     key={route.key}
                     style={[styles.tabItem, isActive && styles.activeTabItem]}
-                    onPress={() => setIndex(routeIndex)}
+                    onPress={() => {
+                      if (index !== routeIndex) {
+                        setSectionLoading(true);
+                        setTimeout(() => {
+                          setIndex(routeIndex);
+                          setSectionLoading(false);
+                        }, 300);
+                      }
+                    }}
                     activeOpacity={0.7}
                   >
                     <View
@@ -804,7 +841,7 @@ const AppContent = ({ session }: { session: Session }) => {
                         textAlign: "center",
                       }}
                     >
-                      LNMIIT Carpool v2.0
+                      LNMIIT Carpool v2.1
                     </Text>
                     <Text
                       style={{
@@ -1010,5 +1047,19 @@ const styles = StyleSheet.create({
     width: 24,
     height: 3,
     borderRadius: 2,
+  },
+  sectionLoadingOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  sectionLoadingText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    marginTop: 16,
   },
 });

@@ -11,6 +11,7 @@ import {
   Alert,
   Modal,
   TextInput,
+  ActivityIndicator,
 } from "react-native";
 import { Avatar, Chip, Searchbar } from "react-native-paper";
 import {
@@ -63,6 +64,7 @@ interface CarpoolRide {
     make: string;
     model: string;
     color: string;
+    licensePlate?: string;
     isAC: boolean;
   };
   route: string[];
@@ -72,7 +74,7 @@ interface CarpoolRide {
     musicAllowed: boolean;
     petsAllowed: boolean;
   };
-  status: "active" | "full" | "completed" | "cancelled";
+  status: "active" | "full" | "completed" | "cancelled" | "expired";
   passengers: Array<{
     id: string;
     name: string;
@@ -93,6 +95,8 @@ interface CarpoolRide {
   }>;
   instantBooking: boolean;
   chatEnabled: boolean;
+  estimatedDuration?: string;
+  expiresAt?: string;
   createdAt: string;
 }
 
@@ -152,6 +156,8 @@ const StudentCarpoolSystem = ({
   const [showJoinRequestModal, setShowJoinRequestModal] = useState(false);
   const [showRequestAcceptance, setShowRequestAcceptance] = useState(false);
   const [selectedJoinRequest, setSelectedJoinRequest] = useState<any>(null);
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Fetch rides from database
   const fetchRides = async () => {
@@ -159,7 +165,7 @@ const StudentCarpoolSystem = ({
       const { data: ridesData, error } = await supabase
         .from("carpool_rides")
         .select("*")
-        .eq("status", "active")
+        .in("status", ["active", "expired"]) // Include expired rides
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -184,6 +190,7 @@ const StudentCarpoolSystem = ({
           {
             hour: "2-digit",
             minute: "2-digit",
+            hour12: true, // Added 12-hour format for better readability
           }
         ),
         date: ride.departure_date,
@@ -194,20 +201,27 @@ const StudentCarpoolSystem = ({
           make: ride.vehicle_make,
           model: ride.vehicle_model,
           color: ride.vehicle_color || "White",
+          licensePlate: ride.license_plate, // Added license plate
           isAC: ride.is_ac,
         },
         route: [ride.from_location, ride.to_location],
         preferences: {
-          gender: "any" as const,
-          smokingAllowed: ride.smoking_allowed,
-          musicAllowed: ride.music_allowed,
-          petsAllowed: ride.pets_allowed,
+          smokingAllowed: ride.smoking_allowed || false,
+          musicAllowed: ride.music_allowed !== false, // Default to true
+          petsAllowed: ride.pets_allowed || false,
         },
-        status: ride.status as "active",
-        passengers: [], // TODO: Fetch from passengers table
-        pendingRequests: [], // Will fetch separately if needed
-        instantBooking: ride.instant_booking,
-        chatEnabled: ride.chat_enabled,
+        status: ride.status as
+          | "active"
+          | "full"
+          | "completed"
+          | "cancelled"
+          | "expired",
+        passengers: [],
+        pendingRequests: [],
+        instantBooking: ride.instant_booking !== false, // Default to true
+        chatEnabled: ride.chat_enabled !== false, // Default to true
+        estimatedDuration: ride.estimated_duration || "30 mins",
+        expiresAt: ride.expires_at,
         createdAt: ride.created_at,
       }));
 
@@ -215,6 +229,8 @@ const StudentCarpoolSystem = ({
       setFilteredRides(transformedRides);
     } catch (error) {
       console.error("Error in fetchRides:", error);
+      setRides([]);
+      setFilteredRides([]);
     }
   };
 
@@ -316,7 +332,21 @@ const StudentCarpoolSystem = ({
   useEffect(() => {
     let filtered = rides;
 
-    if (searchQuery) {
+    // Check for expired rides and update status
+    const now = new Date();
+    filtered = filtered.map((ride) => {
+      if (
+        ride.expiresAt &&
+        new Date(ride.expiresAt) < now &&
+        ride.status === "active"
+      ) {
+        return { ...ride, status: "expired" as const };
+      }
+      return ride;
+    });
+
+    // Search filter
+    if (searchQuery.trim()) {
       filtered = filtered.filter(
         (ride) =>
           ride.from.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -325,6 +355,7 @@ const StudentCarpoolSystem = ({
       );
     }
 
+    // Date/Time filter
     const today = new Date();
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -333,20 +364,40 @@ const StudentCarpoolSystem = ({
 
     switch (selectedFilter) {
       case "today":
-        filtered = filtered.filter(
-          (ride) => new Date(ride.date).toDateString() === today.toDateString()
-        );
+        filtered = filtered.filter((ride) => {
+          const rideDate = new Date(ride.date);
+          return rideDate.toDateString() === today.toDateString();
+        });
         break;
       case "tomorrow":
-        filtered = filtered.filter(
-          (ride) =>
-            new Date(ride.date).toDateString() === tomorrow.toDateString()
-        );
+        filtered = filtered.filter((ride) => {
+          const rideDate = new Date(ride.date);
+          return rideDate.toDateString() === tomorrow.toDateString();
+        });
         break;
       case "this_week":
-        filtered = filtered.filter((ride) => new Date(ride.date) <= nextWeek);
+        filtered = filtered.filter((ride) => {
+          const rideDate = new Date(ride.date);
+          return rideDate >= today && rideDate <= nextWeek;
+        });
+        break;
+      case "all":
+      default:
+        // Show all rides (active and expired)
         break;
     }
+
+    // Sort by status and departure time
+    filtered.sort((a, b) => {
+      // Active rides first, then expired
+      if (a.status === "active" && b.status === "expired") return -1;
+      if (a.status === "expired" && b.status === "active") return 1;
+
+      // Then sort by departure time
+      const dateA = new Date(`${a.date} ${a.departureTime}`);
+      const dateB = new Date(`${b.date} ${b.departureTime}`);
+      return dateA.getTime() - dateB.getTime();
+    });
 
     setFilteredRides(filtered);
   }, [searchQuery, selectedFilter, rides]);
@@ -660,6 +711,10 @@ const StudentCarpoolSystem = ({
     );
     const hasJoined = !!currentPassenger;
     const isPending = currentPassenger?.status === "pending";
+    const isExpired =
+      ride.status === "expired" ||
+      (ride.expiresAt && new Date(ride.expiresAt) < new Date());
+
     const cardColors = [
       { bg: "#E8F5E8", accent: "#4CAF50" }, // Green
       { bg: "#FFF3E0", accent: "#FF9800" }, // Orange
@@ -672,40 +727,84 @@ const StudentCarpoolSystem = ({
       : 0;
     const colors = cardColors[colorIndex] || cardColors[0];
 
+    // Use gray colors for expired rides
+    const finalColors = isExpired
+      ? { bg: "#F5F5F5", accent: "#757575" }
+      : colors;
+
     return (
       <TouchableOpacity
         key={ride.id}
-        style={[styles.jobCard, { backgroundColor: colors.bg }]}
+        style={[
+          styles.jobCard,
+          {
+            backgroundColor: finalColors.bg,
+            opacity: isExpired ? 0.7 : 1,
+          },
+        ]}
         onPress={() => handleRideCardPress(ride)}
       >
         {/* Header with toggle and company name */}
         <View style={styles.jobHeader}>
           <View style={styles.companyInfo}>
             <Text style={styles.companyName}>LNMIIT Carpool</Text>
-            <Text style={[styles.jobTitle, { color: colors.accent }]}>
+            <Text style={[styles.jobTitle, { color: finalColors.accent }]}>
               {ride.from} → {ride.to}
             </Text>
           </View>
           <View style={styles.toggleContainer}>
-            <View style={[styles.toggle, { backgroundColor: colors.accent }]}>
+            {isDriverCurrentUser && (
+              <TouchableOpacity
+                style={[styles.deleteButton]}
+                onPress={() => handleDeleteRide(ride.id)}
+              >
+                <X size={16} color="#FF4444" />
+              </TouchableOpacity>
+            )}
+            <View
+              style={[styles.toggle, { backgroundColor: finalColors.accent }]}
+            >
               <View style={styles.toggleButton} />
             </View>
           </View>
         </View>
 
+        {/* Expiry indicator */}
+        {isExpired && (
+          <View style={styles.expiredBanner}>
+            <Text style={styles.expiredText}>⏰ This ride has expired</Text>
+          </View>
+        )}
+
         {/* Job tags/skills */}
         <View style={styles.tagsContainer}>
-          <View style={[styles.tag, { backgroundColor: colors.accent + "20" }]}>
-            <Text style={[styles.tagText, { color: colors.accent }]}>
+          <View
+            style={[styles.tag, { backgroundColor: finalColors.accent + "20" }]}
+          >
+            <Text style={[styles.tagText, { color: finalColors.accent }]}>
               ₹{ride.pricePerSeat}
             </Text>
           </View>
-          <View style={[styles.tag, { backgroundColor: colors.accent + "20" }]}>
-            <Text style={[styles.tagText, { color: colors.accent }]}>
+          <View
+            style={[styles.tag, { backgroundColor: finalColors.accent + "20" }]}
+          >
+            <Text style={[styles.tagText, { color: finalColors.accent }]}>
               {ride.departureTime}
             </Text>
           </View>
-          {ride.instantBooking && (
+          {ride.estimatedDuration && (
+            <View
+              style={[
+                styles.tag,
+                { backgroundColor: finalColors.accent + "20" },
+              ]}
+            >
+              <Text style={[styles.tagText, { color: finalColors.accent }]}>
+                🕒 {ride.estimatedDuration}
+              </Text>
+            </View>
+          )}
+          {ride.instantBooking && !isExpired && (
             <View style={[styles.tag, { backgroundColor: "#4CAF50" + "20" }]}>
               <Text style={[styles.tagText, { color: "#4CAF50" }]}>
                 ⚡ Instant
@@ -713,7 +812,8 @@ const StudentCarpoolSystem = ({
             </View>
           )}
           {ride.pendingRequests.length > 0 &&
-            ride.driverId === currentUser.id && (
+            ride.driverId === currentUser.id &&
+            !isExpired && (
               <View style={[styles.tag, { backgroundColor: "#FF9800" + "20" }]}>
                 <Text style={[styles.tagText, { color: "#FF9800" }]}>
                   📩 {ride.pendingRequests.length} Request
@@ -721,7 +821,7 @@ const StudentCarpoolSystem = ({
                 </Text>
               </View>
             )}
-          {ride.chatEnabled && (
+          {ride.chatEnabled && !isExpired && (
             <View style={[styles.tag, { backgroundColor: "#2196F3" + "20" }]}>
               <Text style={[styles.tagText, { color: "#2196F3" }]}>
                 💬 Chat
@@ -734,7 +834,9 @@ const StudentCarpoolSystem = ({
         <View style={styles.applicantsSection}>
           <Clock size={16} color="#666" />
           <Text style={styles.applicantsText}>
-            {ride.availableSeats > 0
+            {isExpired
+              ? "Ride has expired"
+              : ride.availableSeats > 0
               ? `${ride.availableSeats} seats available`
               : "Ride is full"}
           </Text>
@@ -772,62 +874,90 @@ const StudentCarpoolSystem = ({
 
         {/* Action buttons */}
         <View style={styles.jobActionButtons}>
-          {!isDriverCurrentUser && !hasJoined && ride.availableSeats > 0 && (
-            <>
+          {!isDriverCurrentUser &&
+            !hasJoined &&
+            ride.availableSeats > 0 &&
+            !isExpired && (
+              <>
+                <TouchableOpacity
+                  style={[
+                    styles.contactBtn,
+                    { borderColor: finalColors.accent },
+                  ]}
+                  onPress={() => handleContactDriver(ride)}
+                >
+                  <Phone size={16} color={finalColors.accent} />
+                  <Text
+                    style={[
+                      styles.contactBtnText,
+                      { color: finalColors.accent },
+                    ]}
+                  >
+                    Contact
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.joinBtn,
+                    { backgroundColor: finalColors.accent },
+                  ]}
+                  onPress={() => handleJoinRide(ride.id)}
+                >
+                  <Text style={styles.joinBtnText}>
+                    {ride.instantBooking ? "Book Now" : "Request Join"}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+          {(hasJoined || isDriverCurrentUser) &&
+            ride.chatEnabled &&
+            !isExpired && (
               <TouchableOpacity
-                style={[styles.contactBtn, { borderColor: colors.accent }]}
-                onPress={() => handleContactDriver(ride)}
+                style={[styles.contactBtn, { borderColor: "#2196F3" }]}
+                onPress={() =>
+                  handleStartChat(ride.id, `${ride.from} → ${ride.to}`)
+                }
               >
-                <Phone size={16} color={colors.accent} />
-                <Text style={[styles.contactBtnText, { color: colors.accent }]}>
-                  Contact
+                <MessageCircle size={16} color="#2196F3" />
+                <Text style={[styles.contactBtnText, { color: "#2196F3" }]}>
+                  Chat
                 </Text>
               </TouchableOpacity>
+            )}
 
-              <TouchableOpacity
-                style={[styles.joinBtn, { backgroundColor: colors.accent }]}
-                onPress={() => handleJoinRide(ride.id)}
-              >
-                <Text style={styles.joinBtnText}>
-                  {ride.instantBooking ? "Book Now" : "Request Join"}
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
-
-          {(hasJoined || isDriverCurrentUser) && ride.chatEnabled && (
-            <TouchableOpacity
-              style={[styles.contactBtn, { borderColor: "#2196F3" }]}
-              onPress={() =>
-                handleStartChat(ride.id, `${ride.from} → ${ride.to}`)
-              }
-            >
-              <MessageCircle size={16} color="#2196F3" />
-              <Text style={[styles.contactBtnText, { color: "#2196F3" }]}>
-                Chat
-              </Text>
-            </TouchableOpacity>
-          )}
-
-          {hasJoined && !isPending && (
+          {hasJoined && !isPending && !isExpired && (
             <View
               style={[
                 styles.joinedBtn,
-                { backgroundColor: colors.accent + "20" },
+                { backgroundColor: finalColors.accent + "20" },
               ]}
             >
-              <Text style={[styles.joinedBtnText, { color: colors.accent }]}>
+              <Text
+                style={[styles.joinedBtnText, { color: finalColors.accent }]}
+              >
                 ✓ Joined
               </Text>
             </View>
           )}
 
-          {isPending && (
+          {isPending && !isExpired && (
             <View
               style={[styles.joinedBtn, { backgroundColor: "#FFA726" + "20" }]}
             >
               <Text style={[styles.joinedBtnText, { color: "#FFA726" }]}>
                 ⏳ Pending Approval
+              </Text>
+            </View>
+          )}
+
+          {isExpired && (
+            <View
+              style={[styles.joinedBtn, { backgroundColor: "#757575" + "20" }]}
+            >
+              <Text style={[styles.joinedBtnText, { color: "#757575" }]}>
+                ⌛ Expired
               </Text>
             </View>
           )}
@@ -869,6 +999,53 @@ const StudentCarpoolSystem = ({
     },
   ];
 
+  // Add delete ride function
+  const handleDeleteRide = async (rideId: string) => {
+    Alert.alert(
+      "Delete Ride",
+      "Are you sure you want to delete this ride? This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setIsLoading(true);
+
+              const { error } = await supabase
+                .from("carpool_rides")
+                .update({ status: "cancelled" })
+                .eq("id", rideId);
+
+              if (error) {
+                console.error("Error deleting ride:", error);
+                Alert.alert(
+                  "Error",
+                  "Failed to delete ride. Please try again."
+                );
+                return;
+              }
+
+              // Remove ride from local state
+              setRides((prev) => prev.filter((ride) => ride.id !== rideId));
+              setFilteredRides((prev) =>
+                prev.filter((ride) => ride.id !== rideId)
+              );
+
+              Alert.alert("Success", "Ride has been deleted successfully.");
+            } catch (error) {
+              console.error("Error in handleDeleteRide:", error);
+              Alert.alert("Error", "Failed to delete ride. Please try again.");
+            } finally {
+              setIsLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <>
       {/* Main Container */}
@@ -894,7 +1071,10 @@ const StudentCarpoolSystem = ({
             inputStyle={{ color: isDarkMode ? "#FFF" : "#000" }}
             iconColor={isDarkMode ? "#CCC" : "#666"}
           />
-          <TouchableOpacity style={styles.filterIcon}>
+          <TouchableOpacity
+            style={styles.filterIcon}
+            onPress={() => setShowFilterModal(true)}
+          >
             <Filter size={20} color={isDarkMode ? "#CCC" : "#666"} />
           </TouchableOpacity>
         </View>
@@ -1659,16 +1839,145 @@ const StudentCarpoolSystem = ({
       )}
 
       {/* Request Acceptance Modal */}
-      <RequestAcceptanceModal
-        visible={showRequestAcceptance}
-        onClose={() => {
-          setShowRequestAcceptance(false);
-          setSelectedJoinRequest(null);
-        }}
-        request={selectedJoinRequest}
-        onRequestHandled={handleRequestHandled}
-        isDarkMode={isDarkMode}
-      />
+      {showRequestAcceptance && selectedJoinRequest && (
+        <RequestAcceptanceModal
+          visible={showRequestAcceptance}
+          request={selectedJoinRequest}
+          onRequestHandled={(requestId, action) =>
+            handleRequestHandled(requestId, action)
+          }
+          onClose={() => {
+            setShowRequestAcceptance(false);
+            setSelectedJoinRequest(null);
+          }}
+          isDarkMode={isDarkMode}
+        />
+      )}
+
+      {/* Filter Modal */}
+      <Modal
+        visible={showFilterModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowFilterModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.filterModal,
+              { backgroundColor: isDarkMode ? "#1A1A1A" : "#FFFFFF" },
+            ]}
+          >
+            <View style={styles.filterHeader}>
+              <Text
+                style={[
+                  styles.filterTitle,
+                  { color: isDarkMode ? "#FFF" : "#000" },
+                ]}
+              >
+                Filter Rides
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowFilterModal(false)}
+                style={styles.closeButton}
+              >
+                <X size={24} color={isDarkMode ? "#FFF" : "#000"} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.filterContent}>
+              <Text
+                style={[
+                  styles.filterSectionTitle,
+                  { color: isDarkMode ? "#FFF" : "#000" },
+                ]}
+              >
+                Time Period
+              </Text>
+
+              {[
+                { key: "all", label: "All Rides", icon: "🚗" },
+                { key: "today", label: "Today", icon: "📅" },
+                { key: "tomorrow", label: "Tomorrow", icon: "🌅" },
+                { key: "this_week", label: "This Week", icon: "📆" },
+              ].map((filter) => (
+                <TouchableOpacity
+                  key={filter.key}
+                  style={[
+                    styles.filterOption,
+                    {
+                      backgroundColor:
+                        selectedFilter === filter.key
+                          ? isDarkMode
+                            ? "#333"
+                            : "#E3F2FD"
+                          : "transparent",
+                      borderColor:
+                        selectedFilter === filter.key
+                          ? "#2196F3"
+                          : isDarkMode
+                          ? "#333"
+                          : "#E0E0E0",
+                    },
+                  ]}
+                  onPress={() => {
+                    setSelectedFilter(filter.key as any);
+                    setShowFilterModal(false);
+                  }}
+                >
+                  <Text style={styles.modalFilterIcon}>{filter.icon}</Text>
+                  <Text
+                    style={[
+                      styles.filterLabel,
+                      {
+                        color:
+                          selectedFilter === filter.key
+                            ? "#2196F3"
+                            : isDarkMode
+                            ? "#FFF"
+                            : "#000",
+                      },
+                    ]}
+                  >
+                    {filter.label}
+                  </Text>
+                  {selectedFilter === filter.key && (
+                    <Check size={20} color="#2196F3" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Loading Indicator */}
+      {isLoading && (
+        <Modal transparent={true} visible={isLoading}>
+          <View style={styles.loadingOverlay}>
+            <View
+              style={[
+                styles.loadingContainer,
+                { backgroundColor: isDarkMode ? "#1A1A1A" : "#FFFFFF" },
+              ]}
+            >
+              <ActivityIndicator
+                size="large"
+                color="#2196F3"
+                style={styles.loadingSpinner}
+              />
+              <Text
+                style={[
+                  styles.loadingText,
+                  { color: isDarkMode ? "#FFF" : "#000" },
+                ]}
+              >
+                Processing...
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
     </>
   );
 };
@@ -1740,11 +2049,7 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   closeButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
+    padding: 4,
   },
   statusBadge: {
     flexDirection: "row",
@@ -2487,6 +2792,86 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: "#4CAF50",
     margin: 2,
+  },
+  expiredBanner: {
+    backgroundColor: "#FF4444",
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  expiredText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  deleteButton: {
+    padding: 8,
+    borderRadius: 8,
+    marginRight: 8,
+  },
+  filterModal: {
+    width: "100%",
+    maxWidth: 400,
+    borderRadius: 20,
+    height: "80%",
+    maxHeight: 600,
+    padding: 20,
+  },
+  filterHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  filterTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  filterContent: {
+    flex: 1,
+  },
+  filterOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderWidth: 2,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  filterLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+  },
+  filterSectionTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 12,
+  },
+  loadingOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingContainer: {
+    width: "80%",
+    maxWidth: 300,
+    padding: 20,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  loadingSpinner: {
+    marginBottom: 10,
+  },
+  loadingText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  modalFilterIcon: {
+    fontSize: 18,
+    marginRight: 8,
   },
 });
 

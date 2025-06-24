@@ -35,12 +35,19 @@ export interface CarpoolRide {
   vehicleInfo: VehicleInfo;
   route: string[];
   preferences: RidePreferences;
-  status: "active" | "full" | "completed" | "cancelled" | "in_progress";
+  status:
+    | "active"
+    | "full"
+    | "completed"
+    | "cancelled"
+    | "expired"
+    | "in_progress";
   passengers: CarpoolPassenger[];
   pendingRequests: JoinRequest[];
   chatEnabled: boolean;
   instantBooking: boolean; // If true, auto-accept; if false, driver must confirm
   estimatedDuration: string;
+  expiresAt?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -90,7 +97,7 @@ export interface VehicleInfo {
   make: string;
   model: string;
   color: string;
-  licensePlate: string;
+  licensePlate?: string;
   year?: number;
   isAC?: boolean;
   capacity?: number;

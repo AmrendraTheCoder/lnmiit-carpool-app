@@ -137,8 +137,20 @@ export default function RideDetailsScreen({
         driverYear: "2024", // Default year
         from: rideData.from_location,
         to: rideData.to_location,
-        departureTime: rideData.departure_time,
-        date: rideData.departure_date,
+        departureTime: new Date(rideData.departure_time).toLocaleTimeString(
+          "en-US",
+          {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+          }
+        ),
+        date: new Date(rideData.departure_date).toLocaleDateString("en-US", {
+          weekday: "short",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        }),
         availableSeats: rideData.available_seats,
         totalSeats: rideData.total_seats,
         pricePerSeat: rideData.price_per_seat,
@@ -159,10 +171,12 @@ export default function RideDetailsScreen({
           | "active"
           | "full"
           | "completed"
-          | "cancelled",
+          | "cancelled"
+          | "expired",
         instantBooking: rideData.instant_booking || true,
         chatEnabled: rideData.chat_enabled || true,
         estimatedDuration: rideData.estimated_duration || "30 mins",
+        expiresAt: rideData.expires_at,
         createdAt: rideData.created_at,
         passengers: [],
         pendingRequests: [],
